@@ -9,6 +9,8 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <stdint.h>
+#include <time.h>
+#include <poll.h>
 
 // Include generated headers
 #include "xdg-shell-client-protocol.h"
@@ -25,12 +27,17 @@ struct wl_compositor *compositor = NULL;
 struct wl_shm *shm = NULL;
 struct xdg_wm_base *xdg_wm_base = NULL;
 struct xdg_activation_v1 *xdg_activation = NULL;
+struct wl_seat *seat = NULL;
+struct wl_pointer *pointer = NULL;
 
 // Function prototypes
 struct wl_buffer *create_buffer();
 
 // Global variable to hold the shm format
 uint32_t shm_format = WL_SHM_FORMAT_XRGB8888;
+
+// Variables to hold the serial and seat
+uint32_t input_serial = 0;
 
 // Window structure
 struct window {
@@ -65,6 +72,89 @@ static const struct xdg_activation_token_v1_listener activation_token_listener =
     activation_token_done
 };
 
+// Pointer listener
+static void pointer_enter(void *data, struct wl_pointer *pointer,
+                          uint32_t serial, struct wl_surface *surface,
+                          wl_fixed_t sx, wl_fixed_t sy) {
+    // Do nothing
+}
+
+static void pointer_leave(void *data, struct wl_pointer *pointer,
+                          uint32_t serial, struct wl_surface *surface) {
+    // Do nothing
+}
+
+static void pointer_motion(void *data, struct wl_pointer *pointer,
+                           uint32_t time, wl_fixed_t sx, wl_fixed_t sy) {
+    // Do nothing
+}
+
+static void pointer_button(void *data, struct wl_pointer *pointer,
+                           uint32_t serial, uint32_t time,
+                           uint32_t button, uint32_t state) {
+    if (state == WL_POINTER_BUTTON_STATE_PRESSED) {
+        input_serial = serial;
+        printf("Pointer button pressed, serial: %u\n", serial);
+    }
+}
+
+static void pointer_axis(void *data, struct wl_pointer *pointer,
+                         uint32_t time, uint32_t axis,
+                         wl_fixed_t value) {
+    // Do nothing
+}
+
+static void pointer_frame(void *data, struct wl_pointer *pointer) {
+    // Do nothing
+}
+
+static void pointer_axis_source(void *data, struct wl_pointer *pointer,
+                                uint32_t axis_source) {
+    // Do nothing
+}
+
+static void pointer_axis_stop(void *data, struct wl_pointer *pointer,
+                              uint32_t time, uint32_t axis) {
+    // Do nothing
+}
+
+static void pointer_axis_discrete(void *data, struct wl_pointer *pointer,
+                                  uint32_t axis, int32_t discrete) {
+    // Do nothing
+}
+
+static const struct wl_pointer_listener pointer_listener = {
+    .enter = pointer_enter,
+    .leave = pointer_leave,
+    .motion = pointer_motion,
+    .button = pointer_button,
+    .axis = pointer_axis,
+    .frame = pointer_frame,
+    .axis_source = pointer_axis_source,
+    .axis_stop = pointer_axis_stop,
+    .axis_discrete = pointer_axis_discrete,
+};
+
+// Seat listener
+static void seat_capabilities(void *data, struct wl_seat *seat, uint32_t caps) {
+    if ((caps & WL_SEAT_CAPABILITY_POINTER) && !pointer) {
+        pointer = wl_seat_get_pointer(seat);
+        wl_pointer_add_listener(pointer, &pointer_listener, NULL);
+    } else if (!(caps & WL_SEAT_CAPABILITY_POINTER) && pointer) {
+        wl_pointer_destroy(pointer);
+        pointer = NULL;
+    }
+}
+
+static void seat_name(void *data, struct wl_seat *seat, const char *name) {
+    // Do nothing
+}
+
+static const struct wl_seat_listener seat_listener = {
+    .capabilities = seat_capabilities,
+    .name = seat_name,
+};
+
 // Registry listener
 static void registry_global(void *data, struct wl_registry *registry,
                             uint32_t name, const char *interface,
@@ -77,6 +167,9 @@ static void registry_global(void *data, struct wl_registry *registry,
         xdg_wm_base = wl_registry_bind(registry, name, &xdg_wm_base_interface, 1);
     } else if (strcmp(interface, xdg_activation_v1_interface.name) == 0) {
         xdg_activation = wl_registry_bind(registry, name, &xdg_activation_v1_interface, 1);
+    } else if (strcmp(interface, wl_seat_interface.name) == 0) {
+        seat = wl_registry_bind(registry, name, &wl_seat_interface, 7);
+        wl_seat_add_listener(seat, &seat_listener, NULL);
     }
 }
 
@@ -181,7 +274,7 @@ int main(int argc, char **argv) {
     wl_display_roundtrip(display);
 
     // Ensure we have the necessary globals
-    if (!compositor || !xdg_wm_base || !xdg_activation || !shm) {
+    if (!compositor || !xdg_wm_base || !xdg_activation || !shm || !seat) {
         fprintf(stderr, "Missing required Wayland interfaces\n");
         return -1;
     }
@@ -190,21 +283,27 @@ int main(int argc, char **argv) {
     struct window *win1 = create_window("First Window", "com.example.firstwindow");
     printf("First window created\n");
 
-  
+    // Inform the user to click on the first window
+    printf("Please click on the first window to capture input serial...\n");
+
+    // Wait until we have an input serial from a pointer button event
+    while (input_serial == 0) {
+        wl_display_dispatch(display);
+    }
 
     // Request an activation token
     char *token_str = NULL;
     struct xdg_activation_token_v1 *token = xdg_activation_v1_get_activation_token(xdg_activation);
     xdg_activation_token_v1_add_listener(token, &activation_token_listener, &token_str);
-    xdg_activation_token_v1_set_surface(token, win1->surface);
+    xdg_activation_token_v1_set_serial(token, input_serial, seat);
+    xdg_activation_token_v1_set_app_id(token, "com.example.firstwindow");
     xdg_activation_token_v1_commit(token);
 
     // Run the event loop to receive the token
     while (token_str == NULL) {
         wl_display_dispatch(display);
     }
-  // Wait a few seconds
-    sleep(3);
+
     printf("Activation token received: %s\n", token_str);
 
     // Create the second window
